@@ -1,0 +1,108 @@
+# Create a service account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: wf-account
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+  name: workflow-edit
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - workflows
+      - workflows/finalizers
+    verbs:
+      - create
+      - delete
+      - deletecollection
+      - get
+      - list
+      - patch
+      - update
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-workflows
+subjects:
+- kind: ServiceAccount
+  name: wf-account
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: workflow-edit
+---
+# Create the DAG
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: wf-keystone
+spec:
+  serviceAccountName: wf-account
+  entrypoint: diamond
+  templates:
+  - name: echo
+    container:
+      image: alpine:3.7
+      command: [echo, "hello"]
+  - name: diamond
+    dag:
+      tasks:
+      - name: A
+        template: echo
+        arguments:
+          parameters: [{name: message, value: A}]
+      - name: B
+        dependencies: [A]
+        template: echo
+        arguments:
+          parameters: [{name: message, value: B}]
+      - name: C
+        dependencies: [A]
+        template: echo
+        arguments:
+          parameters: [{name: message, value: C}]
+      - name: D
+        dependencies: [B, C]
+        template: echo
+        arguments:
+          parameters: [{name: message, value: D}]
+---
+# Create a pod which is dependent on the DAG
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dependent-pod
+spec:
+  serviceAccountName: wf-account
+  containers:
+  - name: alpine
+    image: alpine:3.7
+    command: []
+  initContainers:
+  - name: kubernetes-entrypoint-pod
+    image: ianhowell/kubernetes-entrypoint
+    imagePullPolicy: Always
+    env:
+    - name: PATH
+      value: /app:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/
+    - name: COMMAND
+      value: "echo \"Finished :)\""
+    - name: INITIAL_SLEEP_INTERVAL
+      value: "1000.0"
+    - name: BACKOFF_RATE
+      value: "1.0"
+    - name: MAX_SLEEP_INTERVAL
+      value: "10000.0"
+    - name: OUTPUT_JSON
+      value: "false"
+    - name: DEPENDENCY_CUSTOM_RESOURCE
+      value: "[{\"apiVersion\":\"argoproj.io/v1alpha1\",\"kind\":\"Workflow\",\"namespace\":\"openstack\",\"name\":\"wf-keystone\",\"fields\":[{\"key\":\"status.phase\",\"value\":\"Succeeded\"}]}]"
+    command:
+      - "kubernetes-entrypoint"
