@@ -1,8 +1,6 @@
-# Create a service account
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: wf-account
+{{- $envAll := . }}
+{{- $serviceAccountName := "keystone-fernet-setup" }}
+{{ tuple $envAll "fernet_setup" $serviceAccountName | include "helm-toolkit.snippets.kubernetes_pod_rbac_serviceaccount" }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -32,11 +30,39 @@ metadata:
   name: read-workflows
 subjects:
 - kind: ServiceAccount
-  name: wf-account
+  name: {{ $serviceAccountName }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: workflow-edit
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: Role
+metadata:
+  name: {{ $serviceAccountName }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - create
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: RoleBinding
+metadata:
+  name: {{ $serviceAccountName }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $serviceAccountName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccountName }}
+    namespace: {{ $envAll.Release.Namespace }}
 ---
 # Create the DAG
 apiVersion: argoproj.io/v1alpha1
@@ -44,8 +70,21 @@ kind: Workflow
 metadata:
   name: wf-keystone
 spec:
-  serviceAccountName: wf-account
+  serviceAccountName: {{ $serviceAccountName }}
   entrypoint: diamond
+  volumes:
+  - name: etckeystone
+    emptyDir: {}
+  - name: fernet-keys
+    emptyDir: {}
+  - name: keystone-etc
+    secret:
+      secretName: keystone-etc
+      defaultMode: 0444
+  - name: keystone-bin
+    configMap:
+      name: keystone-bin
+      defaultMode: 0555
   templates:
   - name: echo
     container:
@@ -54,17 +93,15 @@ spec:
   - name: diamond
     dag:
       tasks:
-      - name: A
-        template: echo
-        arguments:
-          parameters: [{name: message, value: A}]
+      - name: keystone-fernet-setup
+        template: keystone-fernet-setup
       - name: B
-        dependencies: [A]
+        dependencies: [keystone-fernet-setup]
         template: echo
         arguments:
           parameters: [{name: message, value: B}]
       - name: C
-        dependencies: [A]
+        dependencies: [keystone-fernet-setup]
         template: echo
         arguments:
           parameters: [{name: message, value: C}]
@@ -73,6 +110,43 @@ spec:
         template: echo
         arguments:
           parameters: [{name: message, value: D}]
+
+  - name: keystone-fernet-setup
+    container:
+      image: "docker.io/openstackhelm/keystone:ocata"
+      imagePullPolicy: IfNotPresent
+      env:
+      - name: KEYSTONE_USER
+        value: "keystone"
+      - name: KEYSTONE_GROUP
+        value: "keystone"
+      - name: KUBERNETES_NAMESPACE
+        value: "openstack"
+      - name: KEYSTONE_KEYS_REPOSITORY
+        value: "/etc/keystone/fernet-keys/"
+      command:
+        - python
+        - /tmp/fernet-manage.py
+        - fernet_setup
+      volumeMounts:
+      - name: etckeystone
+        mountPath: /etc/keystone
+      - name: fernet-keys
+        mountPath: "/etc/keystone/fernet-keys/"
+      - name: keystone-etc
+        mountPath: /etc/keystone/keystone.conf
+        subPath: keystone.conf
+        readOnly: true
+      - name: keystone-etc
+        mountPath: /etc/keystone/logging.conf
+        subPath: logging.conf
+        readOnly: true
+      - name: keystone-bin
+        mountPath: /tmp/fernet-manage.py
+        subPath: fernet-manage.py
+        readOnly: true
+
+
 ---
 # Create a pod which is dependent on the DAG
 apiVersion: v1
@@ -80,7 +154,7 @@ kind: Pod
 metadata:
   name: dependent-pod
 spec:
-  serviceAccountName: wf-account
+  serviceAccountName: {{ $serviceAccountName }}
   containers:
   - name: alpine
     image: alpine:3.7
