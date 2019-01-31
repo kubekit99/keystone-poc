@@ -77,6 +77,8 @@ spec:
     emptyDir: {}
   - name: fernet-keys
     emptyDir: {}
+  - name: credential-keys
+    emptyDir: {}
   - name: keystone-etc
     secret:
       secretName: keystone-etc
@@ -95,6 +97,8 @@ spec:
       tasks:
       - name: keystone-fernet-setup
         template: keystone-fernet-setup
+      - name: keystone-credential-setup
+        template: keystone-credential-setup
       - name: B
         dependencies: [keystone-fernet-setup]
         template: echo
@@ -146,6 +150,40 @@ spec:
         subPath: fernet-manage.py
         readOnly: true
 
+  - name: keystone-credential-setup
+    container:
+      image: "docker.io/openstackhelm/keystone:ocata"
+      imagePullPolicy: IfNotPresent
+      env:
+      - name: KEYSTONE_USER
+        value: "keystone"
+      - name: KEYSTONE_GROUP
+        value: "keystone"
+      - name: KUBERNETES_NAMESPACE
+        value: "openstack"
+      - name: KEYSTONE_KEYS_REPOSITORY
+        value: "/etc/keystone/credential-keys/"
+      command:
+        - python
+        - /tmp/fernet-manage.py
+        - credential_setup
+      volumeMounts:
+      - name: etckeystone
+        mountPath: /etc/keystone
+      - name: credential-keys
+        mountPath: "/etc/keystone/credential-keys/"
+      - name: keystone-etc
+        mountPath: /etc/keystone/keystone.conf
+        subPath: keystone.conf
+        readOnly: true
+      - name: keystone-etc
+        mountPath: /etc/keystone/logging.conf
+        subPath: logging.conf
+        readOnly: true
+      - name: keystone-bin
+        mountPath: /tmp/fernet-manage.py
+        subPath: fernet-manage.py
+        readOnly: true
 
 ---
 # Create a pod which is dependent on the DAG
